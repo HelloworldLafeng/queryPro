@@ -1,26 +1,57 @@
-# Query Forecast KV Selection Experiments
+# Round-Ahead Query Forecasting for Self-Speculative Decoding
 
-This repository contains a PyTorch / HuggingFace Transformers pre-experiment for testing whether short-horizon query forecasting can predict future KV-cache token selection.
+This repository contains a PyTorch / Hugging Face pre-experiment for a sparse-KV self-speculative decoding policy.
 
-## Scope
+## Experimental Question
 
-- Captures Qwen3 attention internals with minimal attention-module patching.
-- Compares `pre_rope_corrected` and `post_rope` query representations.
-- Evaluates token-level KV selection with ratio budgets such as `--budget-ratios 0.1`.
-- Implements baselines: reuse selection, persistence query, linear drift, EMA drift, and a tiny causal TCN predictor.
-- Produces CSV summaries and an optional Markdown experiment report.
+Self-speculative decoding can use one KV cache in two modes:
 
-Model weights and datasets are intentionally not included. The default local paths used by the scripts are:
+- **draft:** attend to a sparse subset of the existing KV cache;
+- **verify:** attend to the complete KV cache and verify the draft tokens.
+
+The full-attention verify pass of round `n-1` exposes the queries for that round. A conventional stale policy can use the previous round's first-draft and terminal/bonus queries to choose the sparse KV subset for round `n`. This repository tests whether temporal query correlation supports a better policy:
+
+1. collect a causal history ending at the terminal query `q_t` of round `n-1`;
+2. predict the terminal query `q_(t+L)` of round `n`, where `L` is the expected draft horizon;
+3. score only the KV tokens already available at `t` with the predicted query;
+4. compare the selected token set with the set preferred by the real future query from the full verify pass.
+
+This is **token-level sparse KV selection**, not KV block retrieval. The experiment does not maintain two KV caches and does not yet run an end-to-end speculative decoder; it evaluates the selection-policy proxy before integrating it into a decoding system.
+
+## Round and Causality Semantics
+
+For a horizon such as `L=8`, a training/evaluation example is:
 
 ```text
-D:\preExperiments\model\Qwen3-4B
-D:\preExperiments\ReasoningData
-D:\preExperiments\LongBench
+available at selection time: q_(t-H+1) ... q_t and K_<=t
+prediction target:           q_(t+8)
+sparse draft selection:      top-K(predicted q_(t+8) @ K_<=t)
+oracle selection:            top-K(actual q_(t+8) @ K_<=t)
 ```
+
+By default examples are taken only at non-overlapping `L`-token round boundaries. `--rolling-windows` enables the older every-token diagnostic mode.
+
+Prompts are split by whole sample, stratified by dataset, **before** query windows are collected. The defaults are 50% train, 25% validation, and 25% test. Learned predictors train only on train prompts, select their best epoch on validation prompts, and all reported selection metrics use only test prompts. This prevents deterministic greedy trajectories from appearing in both training and evaluation.
+
+## Query Representations
+
+- `pre_rope_corrected`: predict the query after Q/K normalization but before RoPE, then apply the future position's RoPE before KV scoring.
+- `post_rope`: predict the already rotated query directly.
+
+## Compared Policies
+
+- `reuse_selection`: reuse the top-K attention selection of the previous terminal query. This is the stalest baseline.
+- `previous_round_endpoint_mean`: average the previous round's first and terminal/bonus queries, then re-score the KV cache. This models the conventional self-speculative heuristic.
+- `persistence_query`: use the previous terminal query directly.
+- `linear_drift` and `ema_drift`: parameter-free temporal extrapolation.
+- `temporal_linear`: a learned dimension-shared temporal filter. It has only `H+1` parameters and approximately `H * head_dim` MACs per head forecast.
+- `tiny_tcn`: a causal residual TCN. Its default hidden width is 32 instead of `head_dim`; change it with `--tcn-channels`.
+
+`predictor_profiles.json` records parameter counts and approximate MACs per head and across all selected layer/head pairs. Forecast inference is performed once per round and reused across all evaluated KV budgets.
 
 ## Main Run
 
-Example 20-sample reasoning run:
+Example reasoning run:
 
 ```powershell
 python run_query_forecast_experiment.py `
@@ -35,13 +66,28 @@ python run_query_forecast_experiment.py `
   --layers representative `
   --head-stride 8 `
   --query-types pre_rope_corrected,post_rope `
-  --results-dir results_formal_l8_reasoning_token_ratio10_20samples `
+  --results-dir results_round_forecast_l8_ratio10 `
   --device cuda `
   --dtype bfloat16 `
-  --train-tcn `
-  --tcn-epochs 4 `
-  --tcn-max-examples 12000
+  --train-predictors temporal_linear,tiny_tcn `
+  --tcn-channels 32 `
+  --predictor-epochs 4 `
+  --max-training-examples 12000
 ```
+
+`--train-tcn` remains as a compatibility alias that adds `tiny_tcn`, but new runs should use `--train-predictors`.
+
+For a stronger result, increase the number of prompts and use multiple sample seeds. Twenty prompts leave only about five held-out test prompts under the default split and should be treated as a smoke/pre-experiment rather than a final statistical result.
+
+## Metrics
+
+- `query_cosine`: cosine similarity between the forecast and actual future post-RoPE query.
+- `token_recall`: overlap with the future query's oracle top-K token set. Predicted and oracle sets have equal size.
+- `retained_attention_mass`: actual future attention mass retained by the selected old KV tokens.
+- `oracle_attention_mass`: future attention mass retained by the best top-K old KV tokens.
+- `attention_recovery`: `retained_attention_mass / oracle_attention_mass`; this is oracle-normalized and is not a fraction of total attention mass.
+
+The main row-weighted summaries are retained for diagnostics. `summary_by_sample.csv` and `summary_macro_by_sample.csv` should be preferred when comparing methods because they avoid allowing prompts with more valid rounds to dominate the result.
 
 ## Data Preparation
 
@@ -51,20 +97,25 @@ Reasoning datasets can be downloaded and normalized with:
 python download_reasoning_data.py
 ```
 
-The script writes normalized JSONL files under `D:\preExperiments\ReasoningData`.
+The default local paths are:
+
+```text
+D:\preExperiments\model\Qwen3-4B
+D:\preExperiments\ReasoningData
+D:\preExperiments\LongBench
+```
 
 ## Outputs
 
-The experiment writes metrics and summaries into the selected `results-dir`, including:
+- `run_config.json`: model/data settings and exact train/validation/test sample IDs;
+- `predictor_profiles.json`: learned predictor parameter and MAC estimates;
+- `query_forecast_metrics.csv`: test-only row-level metrics;
+- `summary_all_steps.csv` and `summary_changed_steps.csv`: micro summaries;
+- `summary_by_sample.csv` and `summary_macro_by_sample.csv`: sample-level summaries;
+- dataset, query-type, and layer diagnostic summaries.
 
-- `query_forecast_metrics.csv`
-- `summary_all_steps.csv`
-- `summary_changed_steps.csv`
-- `summary_by_query_type.csv`
-- `summary_by_dataset.csv`
-- `summary_by_layer.csv`
-- `changed_step_ratio_by_dataset.csv`
-- `changed_step_ratio_by_layer.csv`
+Generated result directories and model weights are ignored by git.
 
-Generated result directories are ignored by git because they may contain very large CSV files.
+## Important Integration Check
 
+The Qwen3 attention module is patched to capture normalized pre-RoPE queries, post-RoPE queries, keys, and optional attention weights. Hugging Face attention internals change between Transformers releases. Before a formal server run, pin the exact working package versions and compare patched versus unpatched logits on a short prompt. The capture adapter accepts either `cache_position` or `position_ids`, but a successful forward pass alone is not sufficient evidence that the patch is numerically equivalent.

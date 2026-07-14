@@ -14,7 +14,16 @@ from .instrumentation import (
     patch_qwen3_attention,
     repeat_kv,
 )
-from .predictors import ReservoirBuffer, TCNTrainingConfig, TinyTCNPredictor, train_tcn_model
+from .predictors import (
+    ReservoirBuffer,
+    TCNTrainingConfig,
+    TemporalLinearPredictor,
+    TinyTCNPredictor,
+    estimate_predictor_macs,
+    predictor_parameter_count,
+    train_predictor_model,
+    train_tcn_model,
+)
 
 __all__ = [
     "AttentionCaptureRuntime",
@@ -23,6 +32,7 @@ __all__ = [
     "ReservoirBuffer",
     "SelectionSpec",
     "TCNTrainingConfig",
+    "TemporalLinearPredictor",
     "TinyTCNPredictor",
     "build_prompt",
     "inverse_rotary",
@@ -32,5 +42,8 @@ __all__ = [
     "sample_longbench",
     "sample_reasoning_data",
     "sample_reasoning_data_allocated",
+    "estimate_predictor_macs",
+    "predictor_parameter_count",
+    "train_predictor_model",
     "train_tcn_model",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Iterable
 
 import torch
 import torch.nn as nn
@@ -34,9 +34,13 @@ class ResidualCausalConvBlock(nn.Module):
 
 
 class TinyTCNPredictor(nn.Module):
-    def __init__(self, head_dim: int, channels: int | None = None, num_layers: int = 3, kernel_size: int = 3):
+    def __init__(self, head_dim: int, channels: int = 32, num_layers: int = 4, kernel_size: int = 2):
         super().__init__()
-        width = channels or head_dim
+        width = channels
+        self.head_dim = head_dim
+        self.channels = width
+        self.num_layers = num_layers
+        self.kernel_size = kernel_size
         self.in_proj = nn.Conv1d(head_dim, width, kernel_size=1)
         self.blocks = nn.ModuleList(
             ResidualCausalConvBlock(width, kernel_size=kernel_size, dilation=2**idx) for idx in range(num_layers)
@@ -54,6 +58,28 @@ class TinyTCNPredictor(nn.Module):
         return self.out_proj(x)
 
 
+class TemporalLinearPredictor(nn.Module):
+    """A dimension-shared temporal filter that predicts a future query delta.
+
+    It has only ``history_length + 1`` trainable parameters and costs roughly
+    ``history_length * head_dim`` MACs for one head.  Sharing the temporal
+    coefficients across query dimensions makes this a useful lower-cost point
+    between hand-written drift rules and a convolutional predictor.
+    """
+
+    def __init__(self, history_length: int):
+        super().__init__()
+        self.history_length = history_length
+        self.temporal = nn.Linear(history_length, 1)
+        nn.init.zeros_(self.temporal.weight)
+        nn.init.zeros_(self.temporal.bias)
+
+    def forward(self, history: torch.Tensor) -> torch.Tensor:
+        if history.shape[1] != self.history_length:
+            raise ValueError(f"Expected history length {self.history_length}, got {history.shape[1]}.")
+        return self.temporal(history.transpose(1, 2)).squeeze(-1)
+
+
 @dataclass
 class TCNTrainingConfig:
     epochs: int = 4
@@ -63,6 +89,7 @@ class TCNTrainingConfig:
     max_examples: int = 12000
     num_workers: int = 0
     device: str = "cpu"
+    seed: int = 7
 
 
 class ReservoirBuffer:
@@ -97,23 +124,28 @@ class ReservoirBuffer:
         return histories, targets
 
 
-def train_tcn_model(
-    model: TinyTCNPredictor,
+def train_predictor_model(
+    model: nn.Module,
     histories: torch.Tensor,
     targets: torch.Tensor,
     config: TCNTrainingConfig,
-) -> TinyTCNPredictor:
+    validation_data: tuple[torch.Tensor, torch.Tensor] | None = None,
+) -> nn.Module:
     device = torch.device(config.device)
     model = model.to(device)
     dataset = TensorDataset(histories, targets)
+    loader_generator = torch.Generator().manual_seed(config.seed)
     loader = DataLoader(
         dataset,
         batch_size=min(config.batch_size, len(dataset)),
         shuffle=True,
         num_workers=config.num_workers,
         drop_last=False,
+        generator=loader_generator,
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    best_state = copy.deepcopy(model.state_dict())
+    best_validation_loss = float("inf")
     for _ in range(config.epochs):
         model.train()
         for batch_histories, batch_targets in loader:
@@ -124,4 +156,40 @@ def train_tcn_model(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
+
+        if validation_data is not None:
+            validation_histories, validation_targets = validation_data
+            model.eval()
+            with torch.no_grad():
+                validation_pred = model(validation_histories.to(device))
+                validation_loss = float(
+                    F.smooth_l1_loss(validation_pred, validation_targets.to(device)).item()
+                )
+            if validation_loss < best_validation_loss:
+                best_validation_loss = validation_loss
+                best_state = copy.deepcopy(model.state_dict())
+
+    if validation_data is not None:
+        model.load_state_dict(best_state)
     return model.eval()
+
+
+def predictor_parameter_count(model: nn.Module) -> int:
+    return sum(parameter.numel() for parameter in model.parameters())
+
+
+def estimate_predictor_macs(model: nn.Module, history_length: int, head_dim: int) -> int:
+    """Approximate multiply-accumulates for one head and one forecast."""
+    if isinstance(model, TemporalLinearPredictor):
+        return history_length * head_dim
+    if isinstance(model, TinyTCNPredictor):
+        width = model.channels
+        in_projection = history_length * head_dim * width
+        convolution_blocks = history_length * model.num_layers * width * width * model.kernel_size
+        output_projection = width * head_dim
+        return in_projection + convolution_blocks + output_projection
+    raise TypeError(f"Unsupported predictor type: {type(model).__name__}")
+
+
+# Backward-compatible name for callers outside this repository.
+train_tcn_model = train_predictor_model

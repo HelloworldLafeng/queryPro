@@ -1,5 +1,11 @@
 # Query Forecast Experiment Summary
 
+> **Legacy exploratory result:** this report was produced before prompt-level
+> train/validation/test splitting was added. The tiny-TCN rows were trained and
+> evaluated on the same deterministic prompt trajectories and therefore must
+> not be interpreted as generalization results. Re-run with the current code;
+> the non-learned baselines remain useful as historical diagnostics.
+
 ## Setup
 
 - Model: `Qwen3-4B`

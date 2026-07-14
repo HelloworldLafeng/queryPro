@@ -140,6 +140,16 @@ def patch_qwen3_attention(model, runtime: AttentionCaptureRuntime) -> None:
             cos, sin = position_embeddings
             post_query, post_key = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
+            positions = cache_position
+            if positions is None:
+                positions = kwargs.get("position_ids")
+            if positions is None:
+                raise RuntimeError(
+                    "Qwen3 attention did not provide cache_position or position_ids; "
+                    "pin a supported Transformers version or update the capture adapter."
+                )
+            positions = positions.reshape(-1)
+
             if past_key_values is not None:
                 cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
                 full_key_states, value_states = past_key_values.update(post_key, value_states, self.layer_idx, cache_kwargs)
@@ -156,7 +166,7 @@ def patch_qwen3_attention(model, runtime: AttentionCaptureRuntime) -> None:
                         post_query=post_query.index_select(1, head_idx).detach().to(dtype=torch.float16).squeeze(0),
                         pre_key=key_states.index_select(1, kv_idx).detach().to(dtype=torch.float16).squeeze(0),
                         post_key=post_key.index_select(1, kv_idx).detach().to(dtype=torch.float16).squeeze(0),
-                        positions=cache_position.detach().clone(),
+                        positions=positions.detach().clone(),
                         attn_weights=None,
                     )
                 )

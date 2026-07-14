@@ -4,32 +4,43 @@ import argparse
 import csv
 import json
 import math
+import random
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from query_forecast import (
     AttentionCaptureRuntime,
     SelectionSpec,
     TCNTrainingConfig,
+    TemporalLinearPredictor,
     TinyTCNPredictor,
     build_prompt,
     patch_qwen3_attention,
     sample_experiment_data,
     sample_reasoning_data_allocated,
-    train_tcn_model,
+    estimate_predictor_macs,
+    predictor_parameter_count,
+    train_predictor_model,
 )
 from query_forecast.predictors import ReservoirBuffer
 
 
 QUERY_TYPES = ("pre_rope_corrected", "post_rope")
-FORECAST_METHODS = ("persistence_query", "linear_drift", "ema_drift", "tiny_tcn")
+FORECAST_METHODS = (
+    "persistence_query",
+    "previous_round_endpoint_mean",
+    "linear_drift",
+    "ema_drift",
+    "temporal_linear",
+    "tiny_tcn",
+)
 
 
 @dataclass
@@ -64,6 +75,8 @@ class BufferedMetricsWriter:
 class SummaryAccumulator:
     def __init__(self) -> None:
         self.sum_attention_recovery = 0.0
+        self.sum_retained_attention_mass = 0.0
+        self.sum_oracle_attention_mass = 0.0
         self.sum_token_recall = 0.0
         self.sum_query_cosine = 0.0
         self.sum_jaccard = 0.0
@@ -73,6 +86,8 @@ class SummaryAccumulator:
 
     def update(self, row: dict[str, Any]) -> None:
         self.sum_attention_recovery += float(row["attention_recovery"])
+        self.sum_retained_attention_mass += float(row["retained_attention_mass"])
+        self.sum_oracle_attention_mass += float(row["oracle_attention_mass"])
         self.sum_token_recall += float(row["token_recall"])
         self.sum_jaccard += float(row["jaccard_reuse_vs_oracle"])
         self.sum_changed += float(row["selection_changed"])
@@ -84,6 +99,8 @@ class SummaryAccumulator:
     def as_dict(self) -> dict[str, float]:
         return {
             "attention_recovery": self.sum_attention_recovery / self.count if self.count else 0.0,
+            "retained_attention_mass": self.sum_retained_attention_mass / self.count if self.count else 0.0,
+            "oracle_attention_mass": self.sum_oracle_attention_mass / self.count if self.count else 0.0,
             "token_recall": self.sum_token_recall / self.count if self.count else 0.0,
             "query_cosine": self.sum_query_cosine / self.query_cosine_count if self.query_cosine_count else float("nan"),
             "jaccard_reuse_vs_oracle": self.sum_jaccard / self.count if self.count else 0.0,
@@ -114,6 +131,7 @@ class SummaryManager:
         self.all_steps: dict[tuple, SummaryAccumulator] = defaultdict(SummaryAccumulator)
         self.changed_steps: dict[tuple, SummaryAccumulator] = defaultdict(SummaryAccumulator)
         self.by_dataset: dict[tuple, SummaryAccumulator] = defaultdict(SummaryAccumulator)
+        self.by_sample: dict[tuple, SummaryAccumulator] = defaultdict(SummaryAccumulator)
         self.by_layer: dict[tuple, SummaryAccumulator] = defaultdict(SummaryAccumulator)
         self.by_query_type: dict[tuple, SummaryAccumulator] = defaultdict(SummaryAccumulator)
         self.changed_ratio_by_dataset: dict[tuple, ChangedRatioAccumulator] = defaultdict(ChangedRatioAccumulator)
@@ -124,11 +142,13 @@ class SummaryManager:
         self.all_steps[base_key].update(row)
         self.by_query_type[("all",) + base_key].update(row)
         self.by_dataset[("all", row["dataset_name"]) + base_key].update(row)
+        self.by_sample[("all", row["sample_id"], row["dataset_name"]) + base_key].update(row)
         self.by_layer[("all", row["layer"]) + base_key].update(row)
         if row["selection_changed"]:
             self.changed_steps[base_key].update(row)
             self.by_query_type[("changed",) + base_key].update(row)
             self.by_dataset[("changed", row["dataset_name"]) + base_key].update(row)
+            self.by_sample[("changed", row["sample_id"], row["dataset_name"]) + base_key].update(row)
             self.by_layer[("changed", row["layer"]) + base_key].update(row)
 
     def update_changed_context(
@@ -169,6 +189,10 @@ class SummaryManager:
             self.by_dataset,
             ["step_scope", "dataset_name", "query_type", "method", "horizon_L", "budget_ratio"],
         )
+        summary_sample = self._summary_to_frame(
+            self.by_sample,
+            ["step_scope", "sample_id", "dataset_name", "query_type", "method", "horizon_L", "budget_ratio"],
+        )
         summary_layer = self._summary_to_frame(
             self.by_layer,
             ["step_scope", "layer", "query_type", "method", "horizon_L", "budget_ratio"],
@@ -186,9 +210,32 @@ class SummaryManager:
         summary_changed.to_csv(results_dir / "summary_changed_steps.csv", index=False)
         summary_query_type.to_csv(results_dir / "summary_by_query_type.csv", index=False)
         summary_dataset.to_csv(results_dir / "summary_by_dataset.csv", index=False)
+        summary_sample.to_csv(results_dir / "summary_by_sample.csv", index=False)
         summary_layer.to_csv(results_dir / "summary_by_layer.csv", index=False)
         changed_dataset.to_csv(results_dir / "changed_step_ratio_by_dataset.csv", index=False)
         changed_layer.to_csv(results_dir / "changed_step_ratio_by_layer.csv", index=False)
+
+        if not summary_sample.empty:
+            group_columns = ["step_scope", "query_type", "method", "horizon_L", "budget_ratio"]
+            metric_columns = [
+                "attention_recovery",
+                "retained_attention_mass",
+                "oracle_attention_mass",
+                "token_recall",
+                "query_cosine",
+                "jaccard_reuse_vs_oracle",
+                "changed_step_ratio",
+            ]
+            macro = summary_sample.groupby(group_columns, dropna=False)[metric_columns].mean().reset_index()
+            sample_counts = (
+                summary_sample.groupby(group_columns, dropna=False)["sample_id"]
+                .nunique()
+                .rename("num_samples")
+                .reset_index()
+            )
+            macro.merge(sample_counts, on=group_columns).to_csv(
+                results_dir / "summary_macro_by_sample.csv", index=False
+            )
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -199,8 +246,15 @@ def parse_float_list(value: str) -> list[float]:
     return [float(part) for part in value.split(",") if part.strip()]
 
 
+def installed_version(distribution_name: str) -> str:
+    try:
+        return version(distribution_name)
+    except PackageNotFoundError:
+        return "not-installed"
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Query forecast pre-experiment for KV block selection.")
+    parser = argparse.ArgumentParser(description="Round-ahead query forecast for sparse-KV self-speculative decoding.")
     parser.add_argument("--model-path", type=Path, default=Path(r"D:\preExperiments\model\Qwen3-4B"))
     parser.add_argument("--dataset-family", type=str, choices=("longbench", "reasoning"), default="reasoning")
     parser.add_argument("--data-root", type=Path, default=None)
@@ -210,9 +264,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--datasets", type=str, default="gsm8k,math500,aime2024")
     parser.add_argument("--history", type=int, default=16)
     parser.add_argument("--horizons", type=str, default="8")
-    parser.add_argument("--block-size", type=int, default=16)
-    parser.add_argument("--budget-blocks", type=str, default="32,64,128")
-    parser.add_argument("--budget-ratios", type=str, default=None)
+    parser.add_argument("--budget-ratios", type=str, default="0.1")
     parser.add_argument("--query-types", type=str, default="pre_rope_corrected,post_rope")
     parser.add_argument("--max-context-tokens", type=int, default=2048)
     parser.add_argument("--num-decode-steps", type=int, default=256)
@@ -221,9 +273,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--layers", type=str, default="representative")
     parser.add_argument("--head-stride", type=int, default=8)
+    parser.add_argument(
+        "--train-predictors",
+        type=str,
+        default="",
+        help="Comma-separated learned predictors: temporal_linear,tiny_tcn.",
+    )
     parser.add_argument("--train-tcn", action="store_true")
-    parser.add_argument("--tcn-epochs", type=int, default=4)
-    parser.add_argument("--tcn-max-examples", type=int, default=12000)
+    parser.add_argument("--predictor-epochs", "--tcn-epochs", dest="predictor_epochs", type=int, default=4)
+    parser.add_argument(
+        "--max-training-examples",
+        "--tcn-max-examples",
+        dest="max_training_examples",
+        type=int,
+        default=12000,
+    )
+    parser.add_argument("--tcn-channels", type=int, default=32)
+    parser.add_argument("--train-ratio", type=float, default=0.5)
+    parser.add_argument("--validation-ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--rolling-windows",
+        action="store_true",
+        help="Use every token as a forecast origin instead of non-overlapping L-token round boundaries.",
+    )
     parser.add_argument("--summary-jsonl", action="store_true")
     parser.add_argument("--dataset-allocation", type=str, default="gsm8k:8,math500:8,aime2024:4")
     return parser.parse_args()
@@ -273,6 +345,50 @@ def parse_dataset_allocation(spec: str) -> dict[str, int]:
         name, count = item.split(":")
         allocation[name.strip()] = int(count.strip())
     return allocation
+
+
+def split_samples_by_dataset(samples, train_ratio: float, validation_ratio: float, seed: int):
+    """Deterministically split whole prompts, stratified by dataset.
+
+    Splitting before query-window collection prevents windows from the same
+    deterministic generation trajectory appearing in both train and test.
+    """
+    if not 0.0 < train_ratio < 1.0:
+        raise ValueError("--train-ratio must be in (0, 1).")
+    if validation_ratio < 0.0 or train_ratio + validation_ratio >= 1.0:
+        raise ValueError("--validation-ratio must be >= 0 and leave a non-empty test ratio.")
+
+    grouped = defaultdict(list)
+    for sample in samples:
+        grouped[sample.dataset_name].append(sample)
+
+    splits = {"train": [], "validation": [], "test": []}
+    for offset, dataset_name in enumerate(sorted(grouped)):
+        group = sorted(grouped[dataset_name], key=lambda item: item.sample_id)
+        random.Random(seed + offset).shuffle(group)
+        count = len(group)
+        if count >= 3:
+            train_count = max(1, int(round(count * train_ratio)))
+            validation_count = max(1, int(round(count * validation_ratio))) if validation_ratio > 0 else 0
+            while train_count + validation_count >= count:
+                if train_count > 1:
+                    train_count -= 1
+                elif validation_count > 0:
+                    validation_count -= 1
+                else:
+                    break
+        else:
+            train_count = max(1, count - 1)
+            validation_count = 0
+        splits["train"].extend(group[:train_count])
+        splits["validation"].extend(group[train_count : train_count + validation_count])
+        splits["test"].extend(group[train_count + validation_count :])
+
+    for split_samples in splits.values():
+        split_samples.sort(key=lambda item: (item.dataset_name, item.sample_id))
+    if not splits["train"] or not splits["test"]:
+        raise ValueError("The requested sample set is too small to create non-empty train and test splits.")
+    return splits
 
 
 def make_selection_spec(model, layer_spec: str, head_stride: int) -> SelectionSpec:
@@ -341,10 +457,7 @@ def rotary_cos_sin_for_positions(model, positions: torch.Tensor, device: torch.d
 
 
 def resolve_budget_ratios(args: argparse.Namespace) -> list[float]:
-    if args.budget_ratios:
-        ratios = parse_float_list(args.budget_ratios)
-    else:
-        ratios = [budget_blocks * args.block_size / args.max_context_tokens for budget_blocks in parse_int_list(args.budget_blocks)]
+    ratios = parse_float_list(args.budget_ratios)
     cleaned = []
     for ratio in ratios:
         if ratio <= 0.0 or ratio > 1.0:
@@ -423,7 +536,7 @@ def run_collection_pass(
     horizons: list[int],
 ) -> dict[tuple[str, int], ReservoirBuffer]:
     buffers = {
-        (query_type, horizon): ReservoirBuffer(max_examples=args.tcn_max_examples, seed=args.sample_seed + horizon)
+        (query_type, horizon): ReservoirBuffer(max_examples=args.max_training_examples, seed=args.sample_seed + horizon)
         for query_type in query_types
         for horizon in horizons
     }
@@ -447,7 +560,7 @@ def run_collection_pass(
                 for head_local in range(len(selection.heads))
                 for query_type in query_types
             }
-            for _ in range(args.num_decode_steps):
+            for step_idx in range(args.num_decode_steps):
                 runtime.begin_step(collect_attn_weights=False)
                 outputs = model(input_ids=next_token, use_cache=True, past_key_values=past_key_values)
                 captured = runtime.end_step()
@@ -459,13 +572,16 @@ def run_collection_pass(
                         "pre_rope_corrected": layer_capture.pre_query[:, 0, :].to(dtype=torch.float32),
                         "post_rope": layer_capture.post_query[:, 0, :].to(dtype=torch.float32),
                     }
-                    for query_type, tensor in tensors.items():
+                    for query_type in query_types:
+                        tensor = tensors[query_type]
                         for head_local in range(tensor.shape[0]):
                             key = (layer_idx, head_local, query_type)
                             history = histories[key]
                             history.append(tensor[head_local].clone())
                             for horizon in horizons:
                                 if len(history) < args.history + horizon:
+                                    continue
+                                if not args.rolling_windows and (step_idx - horizon) % horizon != 0:
                                     continue
                                 history_list = list(history)
                                 source_idx = len(history_list) - horizon - 1
@@ -486,7 +602,7 @@ def evaluate_sample(
     selection: SelectionSpec,
     query_types: list[str],
     horizons: list[int],
-    tcn_models: dict[tuple[str, int], TinyTCNPredictor],
+    predictor_models: dict[tuple[str, str, int], torch.nn.Module],
     metrics_writer: BufferedMetricsWriter,
     summary_manager: SummaryManager,
     jsonl_handle,
@@ -563,6 +679,8 @@ def evaluate_sample(
                 if source_local_idx < args.history - 1:
                     continue
                 source = record_list[source_local_idx]
+                if not args.rolling_windows and source.step_idx % horizon != 0:
+                    continue
                 history_records = record_list[source_local_idx - args.history + 1 : source_local_idx + 1]
                 current = current_record
 
@@ -581,6 +699,41 @@ def evaluate_sample(
                         attn_prefix = current_attn[layer_idx][head_local, : source.prefix_len]
                         source_attn_prefix = source.per_layer[layer_idx]["attn_weights"][head_local, : source.prefix_len]
 
+                        forecast_scores = {}
+                        for query_type in query_types:
+                            q_history = history_by_type[query_type]
+                            base_q_t = q_history[-1]
+                            previous_round_first_idx = max(0, len(q_history) - horizon - 1)
+                            predicted_base_queries = {
+                                "persistence_query": base_q_t,
+                                "previous_round_endpoint_mean": 0.5
+                                * (q_history[previous_round_first_idx] + base_q_t),
+                                "linear_drift": base_q_t + horizon * (q_history[-1] - q_history[-2]),
+                                "ema_drift": base_q_t + horizon * ema_delta(q_history),
+                            }
+                            for predictor_name in ("temporal_linear", "tiny_tcn"):
+                                model_key = (predictor_name, query_type, horizon)
+                                if model_key in predictor_models:
+                                    hist = torch.stack(q_history, dim=0).unsqueeze(0).to(device)
+                                    pred_delta = predictor_models[model_key](hist).squeeze(0)
+                                    predicted_base_queries[predictor_name] = base_q_t.to(device) + pred_delta
+
+                            for method, pred_base_query in predicted_base_queries.items():
+                                pred_query = to_scoring_query(
+                                    query_type,
+                                    pred_base_query.to(device),
+                                    current.position_id,
+                                    model,
+                                    device,
+                                )
+                                scores = torch.matmul(keys, pred_query.to(dtype=torch.float32))
+                                actual_query = current.per_layer[layer_idx]["post_query"][head_local]
+                                forecast_scores[(query_type, method)] = (
+                                    pred_query,
+                                    scores,
+                                    cosine_similarity(pred_query, actual_query),
+                                )
+
                         for budget_ratio in budget_ratios:
                             budget_tokens = budget_tokens_from_ratio(source.prefix_len, budget_ratio)
                             reuse_blocks_tensor = topk_token_indices(source_attn_prefix, budget_tokens)
@@ -595,6 +748,8 @@ def evaluate_sample(
                             reuse_attention_recovery = float(
                                 attn_prefix[reuse_blocks_tensor].sum().item() / attn_prefix[oracle_blocks_tensor].sum().item()
                             )
+                            reuse_retained_mass = float(attn_prefix[reuse_blocks_tensor].sum().item())
+                            oracle_mass = float(attn_prefix[oracle_blocks_tensor].sum().item())
                             reuse_recall = float(torch.isin(reuse_blocks_tensor, oracle_blocks_tensor).float().mean().item())
                             reuse_jaccard = jaccard_similarity(reuse_blocks, oracle_blocks_budget)
                             selection_changed = (reuse_jaccard < 0.8) or (reuse_attention_recovery < 0.9)
@@ -616,11 +771,11 @@ def evaluate_sample(
                                 "query_type": "na",
                                 "method": "reuse_selection",
                                 "horizon_L": horizon,
-                                "block_size": args.block_size,
-                                "budget_blocks": "",
                                 "budget_ratio": budget_ratio,
                                 "budget_tokens": budget_tokens,
                                 "attention_recovery": reuse_attention_recovery,
+                                "retained_attention_mass": reuse_retained_mass,
+                                "oracle_attention_mass": oracle_mass,
                                 "token_recall": reuse_recall,
                                 "query_cosine": float("nan"),
                                 "jaccard_reuse_vs_oracle": reuse_jaccard,
@@ -631,59 +786,34 @@ def evaluate_sample(
                             if jsonl_handle is not None:
                                 jsonl_handle.write(json.dumps(reuse_row, ensure_ascii=False) + "\n")
 
-                            for query_type in query_types:
-                                q_history = history_by_type[query_type]
-                                base_q_t = q_history[-1]
-                                predicted_base_queries = {
-                                    "persistence_query": base_q_t,
-                                    "linear_drift": base_q_t + horizon * (q_history[-1] - q_history[-2]),
-                                    "ema_drift": base_q_t + horizon * ema_delta(q_history),
+                            for (query_type, method), (pred_query, scores, query_cos) in forecast_scores.items():
+                                pred_blocks_tensor = topk_token_indices(scores, budget_tokens)
+                                pred_mass = float(attn_prefix[pred_blocks_tensor].sum().item())
+                                recall = float(torch.isin(pred_blocks_tensor, oracle_blocks_tensor).float().mean().item())
+
+                                row = {
+                                    "sample_id": sample.sample_id,
+                                    "dataset_name": sample.dataset_name,
+                                    "step_t": source.step_idx,
+                                    "layer": layer_idx,
+                                    "head": head,
+                                    "query_type": query_type,
+                                    "method": method,
+                                    "horizon_L": horizon,
+                                    "budget_ratio": budget_ratio,
+                                    "budget_tokens": budget_tokens,
+                                    "attention_recovery": pred_mass / oracle_mass if oracle_mass > 0 else 0.0,
+                                    "retained_attention_mass": pred_mass,
+                                    "oracle_attention_mass": oracle_mass,
+                                    "token_recall": recall,
+                                    "query_cosine": query_cos,
+                                    "jaccard_reuse_vs_oracle": reuse_jaccard,
+                                    "selection_changed": int(selection_changed),
                                 }
-                                model_key = (query_type, horizon)
-                                if model_key in tcn_models:
-                                    hist = torch.stack(q_history, dim=0).unsqueeze(0).to(device)
-                                    pred_delta = tcn_models[model_key](hist).squeeze(0)
-                                    predicted_base_queries["tiny_tcn"] = base_q_t.to(device) + pred_delta
-
-                                for method, pred_base_query in predicted_base_queries.items():
-                                    pred_query = to_scoring_query(
-                                        query_type,
-                                        pred_base_query.to(device),
-                                        current.position_id,
-                                        model,
-                                        device,
-                                    )
-                                    scores = torch.matmul(keys, pred_query.to(dtype=torch.float32))
-                                    pred_blocks_tensor = topk_token_indices(scores, budget_tokens)
-                                    pred_mass = float(attn_prefix[pred_blocks_tensor].sum().item())
-                                    oracle_mass = float(attn_prefix[oracle_blocks_tensor].sum().item())
-                                    recall = float(torch.isin(pred_blocks_tensor, oracle_blocks_tensor).float().mean().item())
-
-                                    actual_query = current.per_layer[layer_idx]["post_query"][head_local]
-                                    query_cos = cosine_similarity(pred_query, actual_query)
-                                    row = {
-                                        "sample_id": sample.sample_id,
-                                        "dataset_name": sample.dataset_name,
-                                        "step_t": source.step_idx,
-                                        "layer": layer_idx,
-                                        "head": head,
-                                        "query_type": query_type,
-                                        "method": method,
-                                        "horizon_L": horizon,
-                                        "block_size": args.block_size,
-                                        "budget_blocks": "",
-                                        "budget_ratio": budget_ratio,
-                                        "budget_tokens": budget_tokens,
-                                        "attention_recovery": pred_mass / oracle_mass if oracle_mass > 0 else 0.0,
-                                        "token_recall": recall,
-                                        "query_cosine": query_cos,
-                                        "jaccard_reuse_vs_oracle": reuse_jaccard,
-                                        "selection_changed": int(selection_changed),
-                                    }
-                                    metrics_writer.write(row)
-                                    summary_manager.update_metric(row)
-                                    if jsonl_handle is not None:
-                                        jsonl_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                                metrics_writer.write(row)
+                                summary_manager.update_metric(row)
+                                if jsonl_handle is not None:
+                                    jsonl_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
             next_token = sampled_token
             if eos_token_id is not None and int(next_token.item()) == eos_token_id:
@@ -700,6 +830,8 @@ def print_summary_table(df: pd.DataFrame) -> None:
         "horizon_L",
         "budget_ratio",
         "attention_recovery",
+        "retained_attention_mass",
+        "oracle_attention_mass",
         "token_recall",
         "query_cosine",
         "jaccard_reuse_vs_oracle",
@@ -712,7 +844,20 @@ def print_summary_table(df: pd.DataFrame) -> None:
 def main() -> None:
     args = parse_args()
     query_types = [part.strip() for part in args.query_types.split(",") if part.strip()]
+    unknown_query_types = sorted(set(query_types) - set(QUERY_TYPES))
+    if unknown_query_types:
+        raise ValueError(f"Unsupported query types: {unknown_query_types}")
+    predictor_names = {part.strip() for part in args.train_predictors.split(",") if part.strip()}
+    if args.train_tcn:
+        predictor_names.add("tiny_tcn")
+    unknown_predictors = sorted(predictor_names - {"temporal_linear", "tiny_tcn"})
+    if unknown_predictors:
+        raise ValueError(f"Unsupported learned predictors: {unknown_predictors}")
     horizons = parse_int_list(args.horizons)
+    if not horizons or any(horizon <= 0 for horizon in horizons):
+        raise ValueError("--horizons must contain positive integers.")
+    if args.history < max(horizons) + 1:
+        raise ValueError("--history must be at least max(horizons) + 1 for the previous-round endpoint baseline.")
     budget_ratios = resolve_budget_ratios(args)
     datasets = [part.strip() for part in args.datasets.split(",") if part.strip()] or None
     dataset_allocation = parse_dataset_allocation(args.dataset_allocation)
@@ -749,11 +894,18 @@ def main() -> None:
             seed=args.sample_seed,
             datasets=datasets,
         )
+    splits = split_samples_by_dataset(samples, args.train_ratio, args.validation_ratio, args.sample_seed)
 
     (args.results_dir / "run_config.json").write_text(
         json.dumps(
             {
                 "dataset_family": args.dataset_family,
+                "model_path": str(args.model_path),
+                "library_versions": {
+                    "torch": installed_version("torch"),
+                    "transformers": installed_version("transformers"),
+                    "pandas": installed_version("pandas"),
+                },
                 "data_root": str(data_root),
                 "num_samples": args.num_samples,
                 "sample_seed": args.sample_seed,
@@ -761,8 +913,6 @@ def main() -> None:
                 "dataset_allocation": dataset_allocation,
                 "history": args.history,
                 "horizons": horizons,
-                "block_size": args.block_size,
-                "budget_blocks": parse_int_list(args.budget_blocks),
                 "budget_ratios": budget_ratios,
                 "query_types": query_types,
                 "max_context_tokens": args.max_context_tokens,
@@ -773,31 +923,92 @@ def main() -> None:
                 "selected_layers": selection.layers,
                 "head_stride": args.head_stride,
                 "selected_heads": selection.heads,
-                "train_tcn": args.train_tcn,
-                "tcn_epochs": args.tcn_epochs,
-                "tcn_max_examples": args.tcn_max_examples,
-                "sample_ids": [sample.sample_id for sample in samples],
-                "sample_datasets": [sample.dataset_name for sample in samples],
+                "forecast_target": "next_round_terminal_query",
+                "round_sampling": "rolling" if args.rolling_windows else "non_overlapping_horizon_boundaries",
+                "selection_unit": "token",
+                "learned_predictors": sorted(predictor_names),
+                "train_ratio": args.train_ratio,
+                "validation_ratio": args.validation_ratio,
+                "predictor_epochs": args.predictor_epochs,
+                "max_training_examples": args.max_training_examples,
+                "tcn_channels": args.tcn_channels,
+                "split_sample_ids": {
+                    split_name: [sample.sample_id for sample in split_samples]
+                    for split_name, split_samples in splits.items()
+                },
+                "split_sample_datasets": {
+                    split_name: [sample.dataset_name for sample in split_samples]
+                    for split_name, split_samples in splits.items()
+                },
             },
             indent=2,
         ),
         encoding="utf-8",
     )
 
-    tcn_models: dict[tuple[str, int], TinyTCNPredictor] = {}
-    if args.train_tcn:
-        buffers = run_collection_pass(args, model, tokenizer, samples, selection, query_types, horizons)
-        training_config = TCNTrainingConfig(
-            epochs=args.tcn_epochs,
-            max_examples=args.tcn_max_examples,
-            device=args.device,
+    predictor_models: dict[tuple[str, str, int], torch.nn.Module] = {}
+    predictor_profiles = []
+    if predictor_names:
+        train_buffers = run_collection_pass(
+            args, model, tokenizer, splits["train"], selection, query_types, horizons
         )
-        for key, buffer in buffers.items():
+        validation_buffers = (
+            run_collection_pass(
+                args, model, tokenizer, splits["validation"], selection, query_types, horizons
+            )
+            if splits["validation"]
+            else {}
+        )
+        training_config = TCNTrainingConfig(
+            epochs=args.predictor_epochs,
+            max_examples=args.max_training_examples,
+            device=args.device,
+            seed=args.sample_seed,
+        )
+        head_dim = getattr(
+            model.config,
+            "head_dim",
+            model.config.hidden_size // model.config.num_attention_heads,
+        )
+        for key, buffer in train_buffers.items():
             if len(buffer) < max(32, args.history * 4):
                 continue
             histories, targets = buffer.tensors()
-            predictor = TinyTCNPredictor(head_dim=model.config.head_dim)
-            tcn_models[key] = train_tcn_model(predictor, histories, targets, training_config)
+            validation_data = None
+            validation_buffer = validation_buffers.get(key)
+            if validation_buffer is not None and len(validation_buffer) > 0:
+                validation_data = validation_buffer.tensors()
+            query_type, horizon = key
+            for predictor_name in sorted(predictor_names):
+                torch.manual_seed(args.sample_seed + horizon)
+                if predictor_name == "temporal_linear":
+                    predictor = TemporalLinearPredictor(args.history)
+                else:
+                    predictor = TinyTCNPredictor(head_dim=head_dim, channels=args.tcn_channels)
+                trained = train_predictor_model(
+                    predictor,
+                    histories,
+                    targets,
+                    training_config,
+                    validation_data=validation_data,
+                )
+                predictor_models[(predictor_name, query_type, horizon)] = trained
+                macs_per_head = estimate_predictor_macs(trained, args.history, head_dim)
+                predictor_profiles.append(
+                    {
+                        "method": predictor_name,
+                        "query_type": query_type,
+                        "horizon": horizon,
+                        "parameters": predictor_parameter_count(trained),
+                        "estimated_macs_per_head_forecast": macs_per_head,
+                        "estimated_macs_all_selected_heads_and_layers": macs_per_head
+                        * len(selection.heads)
+                        * len(selection.layers),
+                    }
+                )
+        (args.results_dir / "predictor_profiles.json").write_text(
+            json.dumps(predictor_profiles, indent=2), encoding="utf-8"
+        )
 
     metrics_path = args.results_dir / "query_forecast_metrics.csv"
     jsonl_handle = (args.results_dir / "query_forecast_metrics.jsonl").open("w", encoding="utf-8") if args.summary_jsonl else None
@@ -814,11 +1025,11 @@ def main() -> None:
                 "query_type",
                 "method",
                 "horizon_L",
-                "block_size",
-                "budget_blocks",
                 "budget_ratio",
                 "budget_tokens",
                 "attention_recovery",
+                "retained_attention_mass",
+                "oracle_attention_mass",
                 "token_recall",
                 "query_cosine",
                 "jaccard_reuse_vs_oracle",
@@ -827,7 +1038,7 @@ def main() -> None:
         )
         writer.writeheader()
         metrics_writer = BufferedMetricsWriter(writer, handle)
-        for sample in samples:
+        for sample in splits["test"]:
             evaluate_sample(
                 args,
                 model,
@@ -836,7 +1047,7 @@ def main() -> None:
                 selection,
                 query_types,
                 horizons,
-                tcn_models,
+                predictor_models,
                 metrics_writer,
                 summary_manager,
                 jsonl_handle,
@@ -846,8 +1057,13 @@ def main() -> None:
         jsonl_handle.close()
 
     summary_manager.write(args.results_dir)
-    summary_all = pd.read_csv(args.results_dir / "summary_all_steps.csv")
-    print_summary_table(summary_all)
+    macro_path = args.results_dir / "summary_macro_by_sample.csv"
+    if macro_path.exists():
+        summary_for_display = pd.read_csv(macro_path)
+        summary_for_display = summary_for_display[summary_for_display["step_scope"] == "all"]
+    else:
+        summary_for_display = pd.read_csv(args.results_dir / "summary_all_steps.csv")
+    print_summary_table(summary_for_display)
 
 
 if __name__ == "__main__":
