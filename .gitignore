@@ -8,6 +8,12 @@ env/
 .env
 
 results*/
+!future_query_union_frontier/results/
+future_query_union_frontier/results/*
+!future_query_union_frontier/results/.gitkeep
+!restricted_frontier_rerank/results/
+restricted_frontier_rerank/results/*
+!restricted_frontier_rerank/results/.gitkeep
 *.log
 
 .pytest_cache/
