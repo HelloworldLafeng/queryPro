@@ -14,6 +14,9 @@ future_query_union_frontier/results/*
 !restricted_frontier_rerank/results/
 restricted_frontier_rerank/results/*
 !restricted_frontier_rerank/results/.gitkeep
+!oracle_b_vs_static/results/
+oracle_b_vs_static/results/*
+!oracle_b_vs_static/results/.gitkeep
 *.log
 
 .pytest_cache/
