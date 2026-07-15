@@ -1,0 +1,2 @@
+horizon,budget_ratio,num_rows,num_samples,union_over_terminal_budget,union_fraction_of_prefix,mean_terminal_set_recall_across_queries,terminal_selection_attention_recovery_across_round
+8,0.1,16800,20,2.683578054453235,0.2748664527807043,0.5613130174528176,0.840717683374872
