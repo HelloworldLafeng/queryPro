@@ -1,0 +1,11 @@
+sample_id,dataset_name,method,input_length,num_kv_pages,speculative_rounds,total_generated_tokens,total_accepted_draft_tokens,mean_accepted_length,full_accept_rounds,zero_accept_rounds,delta_mean_accepted_oracle_minus_static
+2wikimqa-83,2wikimqa,static,8192,512,4,16,13,3.25,1,0,4.25
+2wikimqa-83,2wikimqa,oracle_b,8192,512,2,16,15,7.5,1,0,4.25
+hotpotqa-141,hotpotqa,static,8192,512,3,16,13,4.333333333333333,1,0,3.166666666666667
+hotpotqa-141,hotpotqa,oracle_b,8192,512,2,16,15,7.5,1,0,3.166666666666667
+multifieldqa_en-114,multifieldqa_en,static,8192,512,3,16,13,4.333333333333333,1,0,3.166666666666667
+multifieldqa_en-114,multifieldqa_en,oracle_b,8192,512,2,16,15,7.5,1,0,3.166666666666667
+musique-23,musique,static,8192,512,3,16,13,4.333333333333333,1,0,2.666666666666667
+musique-23,musique,oracle_b,8192,512,2,16,14,7,1,0,2.666666666666667
+qasper-178,qasper,static,8192,512,5,16,12,2.4,0,2,0.8500000000000001
+qasper-178,qasper,oracle_b,8192,512,4,16,13,3.25,0,0,0.8500000000000001

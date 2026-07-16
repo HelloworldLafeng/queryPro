@@ -1,0 +1,149 @@
+{
+  "methods": {
+    "static": {
+      "kv_budget_ratio": 0.1,
+      "draft_length": 8,
+      "mean_accepted_length": 4.765541740674956,
+      "full_acceptance_rate": 0.27708703374777977,
+      "zero_acceptance_rate": 0.03019538188277087,
+      "total_rounds": 563,
+      "total_generated_tokens": 3200,
+      "mean_attention_recovery": 0.918347598781024,
+      "mean_adjacent_oracle_selection_overlap": 0.6865199196363648,
+      "mean_first_last_oracle_selection_overlap": 0.6138941886067882
+    },
+    "oracle_b": {
+      "kv_budget_ratio": 0.1,
+      "draft_length": 8,
+      "mean_accepted_length": 6.5418604651162795,
+      "full_acceptance_rate": 0.6674418604651163,
+      "zero_acceptance_rate": 0.023255813953488372,
+      "total_rounds": 430,
+      "total_generated_tokens": 3200,
+      "mean_attention_recovery": 0.9916273325899041,
+      "mean_adjacent_oracle_selection_overlap": 0.6919061652147401,
+      "mean_first_last_oracle_selection_overlap": 0.6285601341147022
+    }
+  },
+  "mean_accepted_length_absolute_improvement": 1.7763187244413237,
+  "mean_accepted_length_relative_improvement_percent": 37.27422444504157,
+  "paired_sample_outcomes": {
+    "oracle_b_better_count": 49,
+    "same_count": 1,
+    "oracle_b_worse_count": 0,
+    "oracle_b_better_ratio": 0.98,
+    "same_ratio": 0.02,
+    "oracle_b_worse_ratio": 0.0
+  },
+  "input_statistics": {
+    "num_samples": 50,
+    "input_tokens_mean": 8192,
+    "input_tokens_median": 8192.0,
+    "input_tokens_min": 8192,
+    "input_tokens_max": 8192,
+    "kv_pages_mean": 512,
+    "kv_pages_median": 512.0,
+    "kv_pages_min": 512,
+    "kv_pages_max": 512,
+    "round_start_kv_pages_mean": 514.3031218529708,
+    "round_start_kv_pages_median": 514,
+    "round_start_kv_pages_min": 512,
+    "round_start_kv_pages_max": 516
+  },
+  "diagnostics_by_accepted_length": {
+    "static": {
+      "0": {
+        "rounds": 17,
+        "mean_first_last_oracle_overlap": 0.6668591495905505,
+        "mean_attention_recovery": 0.929096284814165
+      },
+      "1": {
+        "rounds": 92,
+        "mean_first_last_oracle_overlap": 0.5814925496781171,
+        "mean_attention_recovery": 0.8209404532935675
+      },
+      "2": {
+        "rounds": 41,
+        "mean_first_last_oracle_overlap": 0.635203600179126,
+        "mean_attention_recovery": 0.8967720028241456
+      },
+      "3": {
+        "rounds": 53,
+        "mean_first_last_oracle_overlap": 0.6365727538662189,
+        "mean_attention_recovery": 0.9120535262926712
+      },
+      "4": {
+        "rounds": 54,
+        "mean_first_last_oracle_overlap": 0.6310592317147069,
+        "mean_attention_recovery": 0.9347341724030833
+      },
+      "5": {
+        "rounds": 47,
+        "mean_first_last_oracle_overlap": 0.6261798811213165,
+        "mean_attention_recovery": 0.9453218952017732
+      },
+      "6": {
+        "rounds": 70,
+        "mean_first_last_oracle_overlap": 0.590386117725097,
+        "mean_attention_recovery": 0.9350637990837373
+      },
+      "7": {
+        "rounds": 33,
+        "mean_first_last_oracle_overlap": 0.6194527618861103,
+        "mean_attention_recovery": 0.9353859692004276
+      },
+      "8": {
+        "rounds": 156,
+        "mean_first_last_oracle_overlap": 0.612956019025563,
+        "mean_attention_recovery": 0.9554000518368244
+      }
+    },
+    "oracle_b": {
+      "0": {
+        "rounds": 10,
+        "mean_first_last_oracle_overlap": 0.6593497262879899,
+        "mean_attention_recovery": 0.9919987139866275
+      },
+      "1": {
+        "rounds": 25,
+        "mean_first_last_oracle_overlap": 0.6460732019567867,
+        "mean_attention_recovery": 0.9914910076631267
+      },
+      "2": {
+        "rounds": 14,
+        "mean_first_last_oracle_overlap": 0.7051026158905962,
+        "mean_attention_recovery": 0.9872689937636664
+      },
+      "3": {
+        "rounds": 19,
+        "mean_first_last_oracle_overlap": 0.6831442493907265,
+        "mean_attention_recovery": 0.9896224455267076
+      },
+      "4": {
+        "rounds": 19,
+        "mean_first_last_oracle_overlap": 0.6790207860503806,
+        "mean_attention_recovery": 0.9897709188384024
+      },
+      "5": {
+        "rounds": 14,
+        "mean_first_last_oracle_overlap": 0.6514615496180719,
+        "mean_attention_recovery": 0.9925843354699618
+      },
+      "6": {
+        "rounds": 33,
+        "mean_first_last_oracle_overlap": 0.6180948640234323,
+        "mean_attention_recovery": 0.9904392289405193
+      },
+      "7": {
+        "rounds": 9,
+        "mean_first_last_oracle_overlap": 0.6601397909098584,
+        "mean_attention_recovery": 0.9922671389402673
+      },
+      "8": {
+        "rounds": 287,
+        "mean_first_last_oracle_overlap": 0.615087205598091,
+        "mean_attention_recovery": 0.9920571065206661
+      }
+    }
+  }
+}

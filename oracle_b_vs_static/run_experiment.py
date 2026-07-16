@@ -581,7 +581,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         trust_remote_code=True,
-        attn_implementation="eager",
+        attn_implementation="sdpa",
         dtype=dtype,
         low_cpu_mem_usage=True,
     ).to(args.device).eval()
