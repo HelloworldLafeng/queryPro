@@ -17,6 +17,9 @@ restricted_frontier_rerank/results/*
 !oracle_b_vs_static/results/
 oracle_b_vs_static/results/*
 !oracle_b_vs_static/results/.gitkeep
+!best_static_oracle/results/
+best_static_oracle/results/*
+!best_static_oracle/results/.gitkeep
 *.log
 
 .pytest_cache/

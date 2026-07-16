@@ -200,6 +200,9 @@ def patch_qwen3_for_sparse_drafting(model, controller: SparseKVController) -> No
                 output, weights = controller.sparse_attention(self, post_q, full_k, full_v, attention_mask)
             else:
                 controller.capture_dense_queries(self.layer_idx, post_q, positions)
+                observe_dense = getattr(controller, "observe_dense_attention", None)
+                if observe_dense is not None:
+                    observe_dense(self, post_q, full_k, attention_mask, positions)
                 repeated_k = repeat_kv(full_k, self.num_key_value_groups)
                 repeated_v = repeat_kv(full_v, self.num_key_value_groups)
                 mask = attention_mask[:, :, :, : repeated_k.shape[-2]] if attention_mask is not None else None
