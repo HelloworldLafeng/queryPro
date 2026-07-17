@@ -1,0 +1,43 @@
+{
+  "model_path": "D:\\preExperiments\\model\\Qwen3-4B",
+  "data_root": "D:\\preExperiments\\LongBench\\data",
+  "results_dir": "results\\smoke_5",
+  "num_samples": 5,
+  "dataset_allocation": "qasper:1,multifieldqa_en:1,hotpotqa:1,2wikimqa:1,musique:1",
+  "sample_seed": 7,
+  "sample_policy": "longest",
+  "min_input_tokens": 1024,
+  "max_context_tokens": 8192,
+  "max_new_tokens": 16,
+  "draft_length": 8,
+  "page_size": 16,
+  "budget_ratio": 0.1,
+  "device": "cuda",
+  "dtype": "bfloat16",
+  "correctness_check_tokens": 128,
+  "dense_check_atol": 0.05,
+  "methods": [
+    "static",
+    "best_static_oracle",
+    "oracle_b"
+  ],
+  "best_static_definition": "Top-B pages by summed dense attention mass over up to 8 future causal decision queries",
+  "selection_universe": "pages present at round start; a selected partial final page may receive later tokens",
+  "selection_granularity": "per layer and query head, using only its corresponding GQA KV head",
+  "budget_rounding": "max(1, ceil(0.1 * round_start_pages))",
+  "page_score_for_endpoint_and_oracle_b": "max token post-RoPE QK within page",
+  "forced_pages": "none",
+  "oracle_probe_and_selection_time_in_primary_comparison": false,
+  "dense_patch_check": {
+    "tokens": 128,
+    "max_abs_logit_error": 0.0,
+    "top1_equal": true
+  },
+  "sample_ids": [
+    "2wikimqa-83",
+    "hotpotqa-141",
+    "multifieldqa_en-114",
+    "musique-23",
+    "qasper-178"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "methods": {
+    "static": {
+      "mean_accepted_length": 4.765541740674956,
+      "full_acceptance_rate": 0.27708703374777977,
+      "zero_acceptance_rate": 0.03019538188277087,
+      "total_rounds": 563,
+      "mean_attention_recovery": 0.918347598781024,
+      "macro_by_sample_mean_accepted_length": 4.893996031746032
+    },
+    "best_static_oracle": {
+      "mean_accepted_length": 5.438492063492063,
+      "full_acceptance_rate": 0.37103174603174605,
+      "zero_acceptance_rate": 0.023809523809523808,
+      "total_rounds": 504,
+      "mean_attention_recovery": 0.9466252313276627,
+      "macro_by_sample_mean_accepted_length": 5.503717171717172
+    },
+    "oracle_b": {
+      "mean_accepted_length": 6.5418604651162795,
+      "full_acceptance_rate": 0.6674418604651163,
+      "zero_acceptance_rate": 0.023255813953488372,
+      "total_rounds": 430,
+      "mean_attention_recovery": 0.9916273325899041,
+      "macro_by_sample_mean_accepted_length": 6.59719696969697
+    }
+  },
+  "best_static_absolute_gain_vs_static": 0.6729503228171074,
+  "oracle_b_absolute_gain_vs_static": 1.7763187244413237,
+  "best_static_gap_to_oracle_b": 1.1033684016242162,
+  "best_static_fraction_of_oracle_b_gain_closed": 0.3788454817019167,
+  "paired_macro": {
+    "static_mean_accepted_length": 4.893996031746032,
+    "best_static_mean_accepted_length": 5.503717171717172,
+    "oracle_b_mean_accepted_length": 6.59719696969697,
+    "best_static_gain_vs_static": 0.60972113997114,
+    "best_static_gap_to_oracle_b": 1.093479797979798,
+    "best_static_fraction_of_oracle_b_gain_closed": 0.35798544163830387,
+    "best_static_better_than_static_samples": 35,
+    "best_static_equal_to_static_samples": 10,
+    "best_static_worse_than_static_samples": 5,
+    "oracle_b_better_than_best_static_samples": 46,
+    "oracle_b_equal_to_best_static_samples": 4,
+    "oracle_b_worse_than_best_static_samples": 0
+  },
+  "best_static_probe": {
+    "probe_endpoint_coverage_vs_per_query_attention_oracle": 0.9647940583033908,
+    "probe_best_static_coverage_vs_per_query_attention_oracle": 0.9895592366399636,
+    "probe_endpoint_fraction_of_eligible_attention": 0.8810393978253294,
+    "probe_best_static_fraction_of_eligible_attention": 0.9035197821759213,
+    "probe_best_static_absolute_coverage_gain": 0.022480384350591933
+  },
+  "num_samples": 50,
+  "input_tokens": {
+    "mean": 8192,
+    "median": 8192.0,
+    "min": 8192,
+    "max": 8192
+  }
+}
