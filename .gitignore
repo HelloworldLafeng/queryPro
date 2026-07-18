@@ -20,6 +20,9 @@ oracle_b_vs_static/results/*
 !best_static_oracle/results/
 best_static_oracle/results/*
 !best_static_oracle/results/.gitkeep
+!token_incremental_selection/results/
+token_incremental_selection/results/*
+!token_incremental_selection/results/.gitkeep
 *.log
 
 .pytest_cache/

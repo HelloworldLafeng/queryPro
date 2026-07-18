@@ -2,6 +2,25 @@
 
 This repository contains a PyTorch / Hugging Face pre-experiment for a sparse-KV self-speculative decoding policy.
 
+## Follow-up Self-Speculative Experiments
+
+The original query-forecast experiment is kept at the repository root. Later,
+independent pre-experiments live in their own folders so their selection units
+and evaluation denominators are not mixed:
+
+- `future_query_union_frontier/`: future-query oracle union and missed frontier;
+- `restricted_frontier_rerank/`: restricted-candidate reranking;
+- `oracle_b_vs_static/`: page-level Static 10% versus per-token Oracle B;
+- `best_static_oracle/`: page-level endpoint mean, Best Static Oracle, and Oracle B;
+- `token_incremental_selection/`: token-level incremental replacement. Its
+  current revision implements the Stage-1 Oracle/candidate upper-bound gate;
+  run that gate before adding or training the lightweight entrant MLP.
+
+Each folder has an independent run guide and `results/` directory. In
+particular, the token-level experiment recomputes its own Static, Best Static,
+and Oracle B baselines; the earlier page-level acceptance values are not reused
+in its Oracle-gain recovery denominator.
+
 ## Experimental Question
 
 Self-speculative decoding can use one KV cache in two modes:
