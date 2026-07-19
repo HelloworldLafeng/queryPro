@@ -23,6 +23,9 @@ best_static_oracle/results/*
 !token_incremental_selection/results/
 token_incremental_selection/results/*
 !token_incremental_selection/results/.gitkeep
+!page_incremental_selection/results/
+page_incremental_selection/results/*
+!page_incremental_selection/results/.gitkeep
 *.log
 
 .pytest_cache/

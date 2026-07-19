@@ -15,6 +15,9 @@ and evaluation denominators are not mixed:
 - `token_incremental_selection/`: token-level incremental replacement. Its
   current revision implements the Stage-1 Oracle/candidate upper-bound gate;
   run that gate before adding or training the lightweight entrant MLP.
+- `page_incremental_selection/`: page-level Oracle Incremental sweep at
+  1%/5%/10%/20% of the selected-page budget; it reuses the validated Static,
+  Best Static, and Oracle B result files instead of rerunning them.
 
 Each folder has an independent run guide and `results/` directory. In
 particular, the token-level experiment recomputes its own Static, Best Static,
