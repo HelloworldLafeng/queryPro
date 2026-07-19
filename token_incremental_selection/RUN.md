@@ -10,6 +10,10 @@ training should begin only after this upper-bound gate is positive.
 
 ## What is compared
 
+The three token-level reference methods below describe the previously recorded
+baselines. They are not rerun by this revision; each suite executes only the
+incremental methods needed for its gate.
+
 - `static_token_10pct`: endpoint-mean selects one token set for the round.
 - `best_static_token_oracle`: future dense attention chooses the best fixed set.
 - `oracle_b_token`: the current real sparse query scans all historical keys and
@@ -109,8 +113,8 @@ Before a formal run, check:
 - every method commits the same dense-greedy output tokens;
 - every incremental set contains exactly K unique causal historical positions;
 - actual replacements never exceed m;
-- Best Static dense coverage is not below endpoint coverage;
-- Oracle B and Oracle Incremental alone consume future/full-scan information.
+- every reported method is one of the five requested Oracle Incremental ratios;
+- Oracle Incremental alone consumes future/full-scan information.
 
 ## Formal Stage-1 upper bound
 
@@ -134,9 +138,10 @@ python token_incremental_selection\run_experiment.py `
   --dtype bfloat16
 ```
 
-Every method uses a dense future probe for comparable offline diagnostics, so
-this sweep is expensive. If necessary, run 30 samples first. Absolute update
-budgets can be tested separately with, for example:
+The Oracle Incremental sweep skips the dense future probe because its update
+target comes directly from each real sparse Query and the fixed-set probe is
+not used by this suite. Absolute update budgets can be tested separately with,
+for example:
 
 ```text
 --update-ratios "" --absolute-update-counts 1,2,4,8,16,32
@@ -196,8 +201,8 @@ results/<run>/
 ```
 
 The summary reports mean accepted length, full-8 and zero-accept rates, actual
-replacement count, candidate recall, and the fraction of the token-level
-Static-to-Oracle-B acceptance gap recovered. The per-round file additionally
+replacement count, and candidate recall. Static-to-Oracle-B gap recovery is
+left blank because those reference methods are not rerun. The per-round file additionally
 contains position-wise selection recall, attention recovery, entrant precision,
 and update diagnostics. Heuristic candidate/entrant labels are resolved one
 step later against the next real sparse Query, not against the dense probe

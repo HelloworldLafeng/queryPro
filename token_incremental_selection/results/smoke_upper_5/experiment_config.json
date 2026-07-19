@@ -1,0 +1,88 @@
+{
+  "model_path": "D:\\preExperiments\\model\\Qwen3-4B",
+  "data_root": "D:\\preExperiments\\LongBench\\data",
+  "results_dir": "results\\smoke_upper_5",
+  "suite": "upper_bound",
+  "num_samples": 5,
+  "dataset_allocation": "qasper:1,multifieldqa_en:1,hotpotqa:1,2wikimqa:1,musique:1",
+  "sample_seed": 7,
+  "sample_policy": "longest",
+  "min_input_tokens": 1024,
+  "max_context_tokens": 8192,
+  "max_new_tokens": 16,
+  "draft_length": 8,
+  "budget_ratio": 0.1,
+  "update_ratios": "0.01,0.02,0.05,0.1,0.2",
+  "absolute_update_counts": "",
+  "candidate_factors": "0.5,1,2,4",
+  "heuristic_update_ratio": 0.05,
+  "heuristic_candidate_factor": 2.0,
+  "device": "cuda",
+  "dtype": "bfloat16",
+  "correctness_check_tokens": 128,
+  "dense_check_atol": 0.05,
+  "methods": [
+    {
+      "name": "oracle_incremental_r0.01",
+      "kind": "oracle_incremental",
+      "update_ratio": 0.01,
+      "absolute_updates": 0,
+      "candidate_factor": 0.0,
+      "eviction": "oracle"
+    },
+    {
+      "name": "oracle_incremental_r0.02",
+      "kind": "oracle_incremental",
+      "update_ratio": 0.02,
+      "absolute_updates": 0,
+      "candidate_factor": 0.0,
+      "eviction": "oracle"
+    },
+    {
+      "name": "oracle_incremental_r0.05",
+      "kind": "oracle_incremental",
+      "update_ratio": 0.05,
+      "absolute_updates": 0,
+      "candidate_factor": 0.0,
+      "eviction": "oracle"
+    },
+    {
+      "name": "oracle_incremental_r0.1",
+      "kind": "oracle_incremental",
+      "update_ratio": 0.1,
+      "absolute_updates": 0,
+      "candidate_factor": 0.0,
+      "eviction": "oracle"
+    },
+    {
+      "name": "oracle_incremental_r0.2",
+      "kind": "oracle_incremental",
+      "update_ratio": 0.2,
+      "absolute_updates": 0,
+      "candidate_factor": 0.0,
+      "eviction": "oracle"
+    }
+  ],
+  "selection_unit": "historical token",
+  "selection_granularity": "one token-position set per layer shared by query heads",
+  "current_query_token": "always retained outside historical KV-cache budget",
+  "token_budget_rounding": "ceil(0.1 * round-start historical tokens), fixed within a draft round",
+  "oracle_selection": "mean post-RoPE QK across correctly GQA-mapped query heads",
+  "incremental_oracle_target": "current real sparse Query after it is formed and before sparse attention",
+  "heuristic_diagnostic_target": "next real sparse Query; causal updates are labeled one step later",
+  "qk_cost_proxy": "counts causal current-query full-history scoring used to build candidate pools; Oracle-label scans are excluded",
+  "implementation_stage": "stage_1_oracle_and_candidate_upper_bound_gate",
+  "learned_predictor_enabled": false,
+  "oracle_probe_cost_in_primary_comparison": false,
+  "dense_patch_check": {
+    "max_abs_logit_error": 0.0,
+    "top1_equal": true
+  },
+  "sample_ids": [
+    "2wikimqa-83",
+    "hotpotqa-141",
+    "multifieldqa_en-114",
+    "musique-23",
+    "qasper-178"
+  ]
+}

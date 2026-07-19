@@ -93,11 +93,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_methods(args) -> list[MethodSpec]:
-    methods = [
-        MethodSpec("static_token_10pct", "static"),
-        MethodSpec("best_static_token_oracle", "best_static_oracle"),
-        MethodSpec("oracle_b_token", "oracle_b"),
-    ]
+    methods = []
     if args.suite in {"upper_bound", "all"}:
         for ratio in parse_floats(args.update_ratios):
             methods.append(MethodSpec(f"oracle_incremental_r{ratio:g}", "oracle_incremental", update_ratio=ratio))
@@ -414,10 +410,17 @@ def run_method(args, sample, model, controller, tokenizer, spec):
         round_id += 1
         remaining = args.max_new_tokens - len(generated)
         target = min(args.draft_length, remaining)
-        probe_records, best_sets, endpoint_scores, probe_metrics = dense_probe(
-            model, controller, state, dense_cache, prior_queries, target, eos
-        )
-        target = min(target, len(probe_records))
+        if spec.kind == "oracle_incremental":
+            best_sets, endpoint_scores = {}, {}
+            probe_metrics = {
+                "probe_endpoint_coverage_vs_per_query_attention_oracle": "",
+                "probe_best_static_coverage_vs_per_query_attention_oracle": "",
+            }
+        else:
+            probe_records, best_sets, endpoint_scores, probe_metrics = dense_probe(
+                model, controller, state, dense_cache, prior_queries, target, eos
+            )
+            target = min(target, len(probe_records))
         rng = random.Random(f"{args.sample_seed}:{sample.dataset_name}:{sample.sample_id}:{spec.name}:{round_id}")
         draft_tokens, steps, updates = draft_round(
             model, controller, state, dense_cache, prior_queries, spec,
@@ -548,14 +551,23 @@ def summarize(args, methods, samples, all_results):
         lookup[(sample.dataset_name, sample.sample_id, result.method)] = item
         sample_rows.append(item)
     static_name, oracle_name = "static_token_10pct", "oracle_b_token"
+    reference_methods_present = all(
+        (sample.dataset_name, sample.sample_id, method) in lookup
+        for sample in samples
+        for method in (static_name, oracle_name)
+    )
     for item in sample_rows:
-        key = (item["dataset_name"], item["sample_id"])
-        static = lookup[key + (static_name,)]["mean_accepted_length"]
-        oracle = lookup[key + (oracle_name,)]["mean_accepted_length"]
-        item["delta_vs_static"] = item["mean_accepted_length"] - static
-        item["oracle_b_gain_recovery"] = (
-            (item["mean_accepted_length"] - static) / (oracle - static) if oracle > static else 0.0
-        )
+        if reference_methods_present:
+            key = (item["dataset_name"], item["sample_id"])
+            static = lookup[key + (static_name,)]["mean_accepted_length"]
+            oracle = lookup[key + (oracle_name,)]["mean_accepted_length"]
+            item["delta_vs_static"] = item["mean_accepted_length"] - static
+            item["oracle_b_gain_recovery"] = (
+                (item["mean_accepted_length"] - static) / (oracle - static) if oracle > static else 0.0
+            )
+        else:
+            item["delta_vs_static"] = ""
+            item["oracle_b_gain_recovery"] = ""
     write_csv(args.results_dir / "token_incremental_per_sample.csv", sample_rows, list(sample_rows[0]))
 
     position_rows, summary_rows = [], []
@@ -627,12 +639,19 @@ def summarize(args, methods, samples, all_results):
                 "accepted_rounds": count,
                 "conditional_acceptance_rate": count / len(eligible) if eligible else 0.0,
             })
-    static_macro = next(row["macro_by_sample_mean_accepted_length"] for row in summary_rows if row["method"] == static_name)
-    oracle_macro = next(row["macro_by_sample_mean_accepted_length"] for row in summary_rows if row["method"] == oracle_name)
+    static_macro = next(
+        (row["macro_by_sample_mean_accepted_length"] for row in summary_rows if row["method"] == static_name),
+        None,
+    )
+    oracle_macro = next(
+        (row["macro_by_sample_mean_accepted_length"] for row in summary_rows if row["method"] == oracle_name),
+        None,
+    )
     for row in summary_rows:
         row["oracle_b_gain_recovery"] = (
             (row["macro_by_sample_mean_accepted_length"] - static_macro) / (oracle_macro - static_macro)
-            if oracle_macro > static_macro else 0.0
+            if static_macro is not None and oracle_macro is not None and oracle_macro > static_macro
+            else ""
         )
     write_csv(args.results_dir / "token_incremental_summary.csv", summary_rows, list(summary_rows[0]))
     write_csv(args.results_dir / "position_acceptance_rate.csv", position_rows, list(position_rows[0]))
@@ -663,17 +682,29 @@ def summarize(args, methods, samples, all_results):
 
 
 def write_report(results_dir, summary_rows, position_rows):
+    has_gain_recovery = any(row["oracle_b_gain_recovery"] != "" for row in summary_rows)
     lines = [
         "# Token-level Incremental KV Selection", "", "## Acceptance and update upper bounds", "",
-        "| Method | Mean accepted | Full-8 rate | Mean replacements | Candidate recall | Oracle-B gain recovery |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
+    if has_gain_recovery:
+        lines += [
+            "| Method | Mean accepted | Full-8 rate | Mean replacements | Candidate recall | Oracle-B gain recovery |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    else:
+        lines += [
+            "| Method | Mean accepted | Full-8 rate | Mean replacements | Candidate recall |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
     for row in summary_rows:
-        lines.append(
+        line = (
             f"| {row['method']} | {row['macro_by_sample_mean_accepted_length']:.4f} | "
             f"{row['full_acceptance_rate']:.4f} | {row['mean_actual_replacements_per_step']:.2f} | "
-            f"{row['mean_candidate_recall']:.4f} | {row['oracle_b_gain_recovery']:.2%} |"
+            f"{row['mean_candidate_recall']:.4f} |"
         )
+        if has_gain_recovery:
+            line = line[:-1] + f" {row['oracle_b_gain_recovery']:.2%} |"
+        lines.append(line)
     lines += ["", "## Conditional acceptance", ""]
     for row in summary_rows:
         values = [
@@ -682,8 +713,8 @@ def write_report(results_dir, summary_rows, position_rows):
         lines.append(f"- `{row['method']}`: " + ", ".join(f"P{idx + 1}={value:.4f}" for idx, value in enumerate(values)))
     lines += [
         "", "## Gate for the predictor stage", "",
-        "Proceed to Token Entrant Predictor training only if a small Oracle Incremental budget recovers a substantial "
-        "fraction of the Static-to-Oracle-B acceptance gap and the causal candidate pool retains sufficient entrant recall.",
+        "Reference methods are not rerun. Compare these accepted lengths with the previously recorded token-level "
+        "Static and Oracle-B results before deciding whether to proceed to Token Entrant Predictor training.",
     ]
     (results_dir / "experiment_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
