@@ -1,0 +1,64 @@
+{
+  "model_path": "D:\\preExperiments\\model\\Qwen3-4B",
+  "data_root": "D:\\preExperiments\\LongBench\\data",
+  "results_dir": "results\\smoke_5",
+  "reference_results_dir": "..\\best_static_oracle\\results\\smoke_5",
+  "num_samples": 5,
+  "dataset_allocation": "qasper:1,multifieldqa_en:1,hotpotqa:1,2wikimqa:1,musique:1",
+  "sample_seed": 7,
+  "sample_policy": "longest",
+  "min_input_tokens": 1024,
+  "max_context_tokens": 8192,
+  "max_new_tokens": 16,
+  "draft_length": 8,
+  "page_size": 16,
+  "budget_ratio": 0.1,
+  "device": "cuda",
+  "dtype": "bfloat16",
+  "correctness_check_tokens": 128,
+  "dense_check_atol": 0.05,
+  "methods": [
+    {
+      "name": "page_incremental_r0.01",
+      "update_ratio": 0.01
+    },
+    {
+      "name": "page_incremental_r0.05",
+      "update_ratio": 0.05
+    },
+    {
+      "name": "page_incremental_r0.1",
+      "update_ratio": 0.1
+    },
+    {
+      "name": "page_incremental_r0.2",
+      "update_ratio": 0.2
+    }
+  ],
+  "reference_methods": [
+    "static",
+    "best_static_oracle",
+    "oracle_b"
+  ],
+  "reference_methods_were_rerun": false,
+  "page_score": "max token post-RoPE QK within page",
+  "selection_granularity": "per layer and query head, using the corresponding GQA KV head",
+  "budget_rounding": "max(1, ceil(0.1 * round_start_pages))",
+  "update_rounding": "max(1, ceil(update_ratio * selected_page_budget))",
+  "initial_selection": "previous verification first/terminal post-RoPE Query mean",
+  "incremental_oracle_target": "current real sparse Query, before this layer's attention",
+  "forced_pages": "none",
+  "oracle_selection_time_in_primary_comparison": false,
+  "dense_patch_check": {
+    "tokens": 128,
+    "max_abs_logit_error": 0.0,
+    "top1_equal": true
+  },
+  "sample_ids": [
+    "2wikimqa-83",
+    "hotpotqa-141",
+    "multifieldqa_en-114",
+    "musique-23",
+    "qasper-178"
+  ]
+}
